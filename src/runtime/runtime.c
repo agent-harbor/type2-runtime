@@ -997,6 +997,28 @@ void build_mount_point(char* mount_dir, const char* const argv0, const char* con
     snprintf(mount_dir, templen + prefix_len + namelen + suffix_len + 1, "%s/.mount_%.*sXXXXXX", temp_base, (int)namelen, path_basename);
 }
 
+/* Called once the FUSE session loop has returned, that is once the daemon has decided to stop.
+ *
+ * fuse_remove_signal_handlers() restores the default action of SIGHUP, SIGINT, SIGTERM and SIGPIPE, and the
+ * unmount only happens after it. A termination signal arriving in between (a service manager signalling every
+ * process of the application, or the second of two SIGTERMs), or SIGPIPE raised by write_pipe_thread() writing
+ * to the keepalive pipe whose readers are gone, would kill the daemon with the image still mounted. The mount is
+ * then left behind with no server ("Transport endpoint is not connected") until someone runs fusermount -u.
+ *
+ * The signals are ignored rather than blocked: dispositions are process-wide, whereas a signal mask is per thread,
+ * and SIGPIPE from write_pipe_thread() is delivered to that thread. fuse_remove_signal_handlers() only resets a
+ * handler that is still its own, so it leaves these alone. The fusermount child inherits them as ignored too. */
+static void ignore_termination_signals(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    const int signals[] = {SIGHUP, SIGINT, SIGTERM, SIGPIPE};
+    for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
+        sigaction(signals[i], &sa, NULL);
+    }
+}
+
 int fusefs_main(int argc, char* argv[], void (* mounted)(void)) {
     struct fuse_args args;
     sqfs_opts opts;
@@ -1109,6 +1131,8 @@ int fusefs_main(int argc, char* argv[], void (* mounted)(void)) {
                     /* FIXME: multithreading */
                     err = fuse_session_loop(ch.session);
                     teardown_idle_timeout();
+                    /* Stay alive until the image is unmounted. */
+                    ignore_termination_signals();
                     fuse_remove_signal_handlers(ch.session);
                 }
             }
