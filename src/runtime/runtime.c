@@ -945,7 +945,7 @@ int rm_recursive_callback(const char* path, const struct stat* stat, const int t
         case FTW_SLN:
             if (remove(path) != 0) {
                 fprintf(stderr, "Failed to remove %s: %s\n", path, strerror(errno));
-                return false;
+                return 1;
             }
             break;
 
@@ -953,7 +953,7 @@ int rm_recursive_callback(const char* path, const struct stat* stat, const int t
         case FTW_DP:
             if (rmdir(path) != 0) {
                 fprintf(stderr, "Failed to remove directory %s: %s\n", path, strerror(errno));
-                return false;
+                return 1;
             }
             break;
 
@@ -970,7 +970,12 @@ bool rm_recursive(const char* const path) {
     // FTW_MOUNT: prevent deletion of files on other mounted filesystems
     // FTW_PHYS: do not follow symlinks, but report symlinks as such; this way, the symlink targets, which might point
     //           to locations outside path will not be deleted accidentally (attackers might abuse this)
-    int rv = nftw(path, &rm_recursive_callback, 0, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
+    // fd_limit must be positive: musl's nftw() returns 0 without visiting anything if it is 0 or less. musl also
+    // descends at most fd_limit directory levels (it keeps one descriptor open per level), whereas glibc keeps at
+    // most fd_limit directories open and walks any depth. Every level adds at least two characters to a path, so no
+    // tree that can be walked within PATH_MAX is deeper than PATH_MAX / 2 levels. Only as many descriptors as the
+    // tree has levels are ever open at once.
+    int rv = nftw(path, &rm_recursive_callback, PATH_MAX / 2, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
 
     return rv == 0;
 }
